@@ -143,8 +143,19 @@ def timing_opt(mp3_path, tar_path, tmp_path=None, preproc=False, aS=2):
                 k -= 1
     return L
 
-def warp(prevfr, nextfr):
-    pass
+def half_warp(prevfr, nextfr):
+    prev_gray = cv2.cvtColor(prevfr, cv2.COLOR_BGR2GRAY)
+    next_gray = cv2.cvtColor(nextfr, cv2.COLOR_BGR2GRAY)
+    H, W = prev_gray.shape
+    flow = np.zeros(prev_gray.shape)
+    flow = cv2.calcOpticalFlowFarneback(prev_gray, next_gray, flow, 
+                                        pyr_scale=0.5, levels=3, winsize=15, iterations=3, 
+                                        poly_n=5, poly_sigma=1.2, flags=0)
+    flow /= 2
+    flow[:, :, 0] += np.arange(W)                           # x axis
+    flow[:, :, 1] += np.arange(H)[:, np.newaxis]            # y axis
+    resfr = cv2.remap(prevfr, flow, None, cv2.INTER_LINEAR) # interpolating
+    return resfr
     
 def retiming(tar_path, save_path, L):
     cap = cv2.VideoCapture(tar_path)
@@ -163,6 +174,21 @@ def retiming(tar_path, save_path, L):
             print("%s: %04d/%04d" % (save_path, idx, L.shape[0]))
     print('Done')
     
+def test1():
+    # optical flow warping test
+    prevfr = cv2.imread('tmp/777.png')
+    nextfr = cv2.imread('tmp/778.png')
+    resfr1 = half_warp(prevfr, nextfr)
+    resfr2 = half_warp(nextfr, prevfr)
+    resfr  = ((resfr1.astype(np.int) + resfr2.astype(np.int)) / 2).astype(np.uint8)
+    spec = np.zeros((resfr.shape[0], resfr.shape[1]*5, resfr.shape[2]))
+    spec[:, resfr.shape[1]*0:resfr.shape[1]*1, :] = prevfr
+    spec[:, resfr.shape[1]*1:resfr.shape[1]*2, :] = resfr1
+    spec[:, resfr.shape[1]*2:resfr.shape[1]*3, :] = resfr
+    spec[:, resfr.shape[1]*3:resfr.shape[1]*4, :] = resfr2
+    spec[:, resfr.shape[1]*4:resfr.shape[1]*5, :] = nextfr
+    cv2.imwrite('reference/777-778_spec.png', spec)    
+    
 def run():
     mp3_path = 'input/test036.mp3'
     tar_path = 'target/target001.mp4'
@@ -174,4 +200,5 @@ def run():
     retiming(tar_path, save_path, L)    
 
 if __name__ == '__main__':
-    run()
+    test1()
+    

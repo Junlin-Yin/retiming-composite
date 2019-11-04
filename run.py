@@ -20,7 +20,7 @@ def util1(tar_path, save_path, startfr=0, endfr=None):
         writer.write(frame)
     print('Done')
     
-def util2(tar_path, save_path, startfr=0, endfr=None):
+def util2(tar_path, save_path, startfr=777, endfr=779):
     cap = cv2.VideoCapture(tar_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, startfr)
     cnt = startfr
