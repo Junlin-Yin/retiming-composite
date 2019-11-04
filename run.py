@@ -2,6 +2,7 @@
 
 import cv2
 from __init__ import vfps, size
+from retiming import retiming
 
 def util1(tar_path, save_path, startfr=0, endfr=None):
     # clip target video
@@ -35,7 +36,13 @@ def util2(tar_path, save_path, startfr=777, endfr=779):
         cv2.imwrite('%s%04d.png' % (save_path, cnt), frame)
     print('Done')
     
-if __name__ == '__main__':
+def run():
+    mp3_path = 'input/test036.mp3'
     tar_path = 'target/target001.mp4'
-    save_path= 'tmp/'
-    util2(tar_path, save_path)
+    tmp_path = 'reference/retiming_t36i1.npz'
+    save_path = 'target/rt_target001.mp4'
+    save_path, startfr = retiming(mp3_path, tar_path, tmp_path, save_path)
+    print('Start from frame %04d.' % startfr)
+    
+if __name__ == '__main__':
+    run()

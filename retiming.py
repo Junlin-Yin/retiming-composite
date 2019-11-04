@@ -6,7 +6,7 @@ import math
 import librosa
 import numpy as np
 from __init__ import detector, predictor, vfps, size
-from __init__ import ref_dir
+from __init__ import ref_dir, tar_dir
 
 def test_aloud(mp3_path, thr1=1e-3, thr2=0.5, ksize=3, n=100):
     # test if each synthesized frame is 'aloud' using threshold $(thr1)
@@ -102,13 +102,8 @@ def preprocess(mp3_path, tar_path, npz_path):
     G = match_penalty(A, V)
     np.savez(npz_path, A=A, V=V, G=G)
     
-def timing_opt(mp3_path, tar_path, tmp_path=None, preproc=False, aS=2):
+def timing_opt(mp3_path, tar_path, tmp_path, preproc=False, aS=2):
     # check if preprocessing is needed
-    _, fname = os.path.split(mp3_path)
-    mp3_id, _ = os.path.splitext(fname)
-    _, fname = os.path.split(tar_path)
-    tar_id, _ = os.path.splitext(fname)
-    tmp_path = '%s%s-x%s' % (ref_dir, mp3_id, tar_id) if tmp_path is None else tmp_path
     if preproc or os.path.exists(tmp_path) == False:
         preprocess(mp3_path, tar_path, tmp_path)
     
@@ -157,23 +152,55 @@ def half_warp(prevfr, nextfr):
     resfr = cv2.remap(prevfr, flow, None, cv2.INTER_LINEAR) # interpolating
     return resfr
     
-def retiming(tar_path, save_path, L):
+def match(tar_path, save_path, L, warp):
+    # read in all frames of target video
+    print('Start forming new target video...')
+    cnt = 0
     cap = cv2.VideoCapture(tar_path)
-    writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'DIVX'), vfps, size)
-    idx = 0
-    print('Start preprocessing...')
-    while cap.isOpened():
-        if idx == L.shape[0]:
-            break
-        cap.set(cv2.CAP_PROP_POS_FRAMES, L[idx])
-        _, frame = cap.read()
-        writer.write(frame)
-        
-        idx += 1
-        if idx % 100 == 0 or idx == L.shape[0]:
-            print("%s: %04d/%04d" % (save_path, idx, L.shape[0]))
-    print('Done')
+    writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), vfps, size)
     
+    cap.set(cv2.CAP_PROP_POS_FRAMES, L[0])
+    ret, firstfr = cap.read()
+    assert(ret)
+    writer.write(firstfr)
+    cnt += 1
+    
+    cap.set(cv2.CAP_PROP_POS_FRAMES, L[1])
+    ret, prefr = cap.read()
+    assert(ret)
+    for i in range(2, L.shape[0]):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, L[i])
+        ret, curfr = cap.read()
+        assert(ret)
+        
+        # check and warp the duplicate frames
+        if warp and L[i-2] == L[i-1]:
+            tmpfr1 = half_warp(prefr, curfr).astype(np.int)
+            tmpfr2 = half_warp(curfr, prefr).astype(np.int)            
+            prefr = ((tmpfr1 + tmpfr2) / 2).astype(np.uint8)
+        
+        writer.write(prefr)
+        prefr = curfr
+        cnt += 1        
+        if cnt % 100 == 0:
+            print('%s: %04d/%04d' % (save_path, i, L.shape[0]))
+        
+    writer.write(prefr)
+    cnt += 1
+    print('Done')
+
+def retiming(mp3_path, tar_path, tmp_path=None, save_path=None, warp=True):
+    _, fname = os.path.split(mp3_path)
+    mp3_id, _ = os.path.splitext(fname)
+    _, fname = os.path.split(tar_path)
+    tar_id, _ = os.path.splitext(fname)
+    tmp_path = '%s%s-x-%s.npz' % (ref_dir, mp3_id, tar_id) if tmp_path is None else tmp_path
+    save_path = '%s%s-x-%s.mp4' % (tar_dir, mp3_id, tar_id) if save_path is None else save_path
+    
+    L = timing_opt(mp3_path, tar_path, tmp_path)
+    match(tar_path, save_path, L, warp)
+    return save_path, L[0]
+
 def test1():
     # optical flow warping test
     prevfr = cv2.imread('tmp/777.png')
@@ -181,24 +208,14 @@ def test1():
     resfr1 = half_warp(prevfr, nextfr)
     resfr2 = half_warp(nextfr, prevfr)
     resfr  = ((resfr1.astype(np.int) + resfr2.astype(np.int)) / 2).astype(np.uint8)
-    spec = np.zeros((resfr.shape[0], resfr.shape[1]*5, resfr.shape[2]))
-    spec[:, resfr.shape[1]*0:resfr.shape[1]*1, :] = prevfr
-    spec[:, resfr.shape[1]*1:resfr.shape[1]*2, :] = resfr1
-    spec[:, resfr.shape[1]*2:resfr.shape[1]*3, :] = resfr
-    spec[:, resfr.shape[1]*3:resfr.shape[1]*4, :] = resfr2
-    spec[:, resfr.shape[1]*4:resfr.shape[1]*5, :] = nextfr
+    spec = np.zeros((resfr.shape[0]*5, resfr.shape[1], resfr.shape[2]))
+    spec[resfr.shape[0]*0:resfr.shape[0]*1, :, :] = prevfr
+    spec[resfr.shape[0]*1:resfr.shape[0]*2, :, :] = resfr1
+    spec[resfr.shape[0]*2:resfr.shape[0]*3, :, :] = resfr
+    spec[resfr.shape[0]*3:resfr.shape[0]*4, :, :] = resfr2
+    spec[resfr.shape[0]*4:resfr.shape[0]*5, :, :] = nextfr
     cv2.imwrite('reference/777-778_spec.png', spec)    
-    
-def run():
-    mp3_path = 'input/test036.mp3'
-    tar_path = 'target/target001.mp4'
-    tmp_path = 'reference/retiming_t36i1.npz'
-    save_path = 'target/rt_target001.mp4'
-    L = timing_opt(mp3_path, tar_path, tmp_path)
-#    np.save('reference/L.npy', L)
-    print('Start from frame %04d.' % L[0])
-    retiming(tar_path, save_path, L)    
 
 if __name__ == '__main__':
-    test1()
+    print('Hello, World')
     
