@@ -27,7 +27,7 @@ def plot3d(p3ds):
     ax.scatter(p3ds[:,0],p3ds[:,1], p3ds[:,2])
     plt.show()
     
-def resize(img, det, p2d, detw=200, imgw=250):
+def resize(img, det, p2d, detw=200, imgw=320):
     # detw and imgw are both determined by the template model.
     # assume that det.width() ~ det.height()
     left, top = det.left(), det.top()
@@ -53,20 +53,6 @@ def resize(img, det, p2d, detw=200, imgw=250):
     rect_ = (gap, gap, gap+detw, gap+detw)
     
     return img_, p2d_, rect_
-
-def resize1(img_, facebb, p2d_):
-    WD = 250
-    HT = 250
-    facebb = [facebb.left(), facebb.top(), facebb.width(), facebb.height()]
-    w = facebb[2]
-    h = facebb[3]
-    fb_ = np.clip([[facebb[0] - w, facebb[1] - h],[facebb[0] + 2 * w, facebb[1] + 2 * h]], [0,0], [img_.shape[1], img_.shape[0]])  
-    img = img_[fb_[0][1]:fb_[1][1], fb_[0][0]:fb_[1][0],:]      # img.shape <= (3h, 3w) where [w, h] is the size of face detector
-    p2d = np.copy(p2d_) 
-    p2d[:,0] = (p2d_[:,0] - fb_[0][0]) * float(WD) / float(img.shape[1])
-    p2d[:,1] = (p2d_[:,1] - fb_[0][1]) * float(HT) / float(img.shape[0])
-    img = cv2.resize(img, (WD,HT))
-    return img, p2d, facebb
 
 class frontalizer():
     def __init__(self,refname):
@@ -102,9 +88,8 @@ class frontalizer():
         
     def frontalization(self, img_, facebb, p2d_):
         #we rescale the face region (twice as big as the detected face) before applying frontalisation
-        ACC_CONST = 800
+        ACC_CONST = 0
         img, p2d, _ = resize(img_, facebb, p2d_)
-        cv2.imwrite('tmp/resize.png', img)
        
         tem3d = np.reshape(self.refU,(-1,3),order='F')
         bgids = tem3d[:,1] < 0# excluding background 3d points 
