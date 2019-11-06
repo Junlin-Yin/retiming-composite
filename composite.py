@@ -52,6 +52,9 @@ def pyramid_blend(img1, img2, mask, layers):
     img = reconstruct(initG, BLappyr)
     return img
 
+def warp_txtr(tarfr, syntxtr):
+    pass
+
 def test1():
     left = cv2.imread('tmp/left.png')
     right = cv2.imread('tmp/right.png')
