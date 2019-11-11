@@ -84,7 +84,22 @@ class frontalizer():
             return rvec,tvec,ProjM_
         
     def rev_frontalization(self, target_, facebb, p2d_, txtr):
-        pass
+        img, p2d, _ = resize(target_, facebb, p2d_)
+        tem3d = np.reshape(self.refU,(-1,3),order='F')
+        bgids = tem3d[:,1] < 0# excluding background 3d points 
+        ref3dface = np.insert(tem3d, 3, np.ones(len(tem3d)),axis=1).T   # homogeneous coordinates
+        _, _, ProjM = self.get_headpose(p2d)
+        proj3d = ProjM.dot(ref3dface)
+        proj3d[0] /= proj3d[2]      # homogeneous normalization
+        proj3d[1] /= proj3d[2]      # homogeneous normalization
+        proj2dtmp = proj3d[0:2]
+        #The 3D reference is projected to the 2D region by the estimated pose 
+        #Then check the projection lies in the image or not 
+        vlids = np.logical_and(np.logical_and(proj2dtmp[0] > 0, proj2dtmp[1] > 0), 
+                               np.logical_and(proj2dtmp[0] < img.shape[1] - 1,  proj2dtmp[1] < img.shape[0] - 1))
+        vlids = np.logical_and(vlids, bgids)
+        proj2d_valid = proj2dtmp[:,vlids]       # totally vlids points can be projected into the query image
+        return txtr
         
     def frontalization(self, img_, facebb, p2d_):
         #we rescale the face region (twice as big as the detected face) before applying frontalisation
@@ -151,10 +166,10 @@ class frontalizer():
             frontal_sym = (rawfrontal * weights + rawfrontal * weight_take_from_org + np.fliplr(rawfrontal) * weight_take_from_sym) / denominator
         else:
             frontal_sym = rawfrontal
-        return rawfrontal, frontal_sym
+        return rawfrontal, frontal_sym, ProjM
 
 fronter = frontalizer('reference/ref3d.pkl')
-def facefrontal(img, detector, predictor):
+def facefrontal(img, detector, predictor, proj=False):
     '''
     ### parameters
     img: original image to be frontalized \\
@@ -169,14 +184,19 @@ def facefrontal(img, detector, predictor):
     det = dets[0]
     shape = predictor(img, det)
     p2d = np.asarray([(shape.part(n).x, shape.part(n).y,) for n in range(shape.num_parts)], np.float32)
-    rawfront, symfront = fronter.frontalization(img, det, p2d)
+    rawfront, symfront, projM = fronter.frontalization(img, det, p2d)
     newimg = symfront.astype('uint8')
-    # cv2.imshow('newimg', newimg)
-    # cv2.waitKey(0)
-    return newimg
+    if proj == False:
+        return newimg
+    else:
+        return newimg, projM
 
 if __name__ == "__main__":
     from __init__ import detector, predictor
-    img = cv2.imread('tmp/0660.png')
-    front_img = facefrontal(img, detector, predictor)
-    cv2.imwrite('tmp/front.png', front_img)
+    tar = cv2.imread('tmp/0660.png')
+    det = detector(tar, 1)[0]
+    shape = predictor(tar, det)
+    p2d = np.asarray([(shape.part(n).x, shape.part(n).y) for n in range(shape.num_parts)], np.float32)
+    txtr = cv2.imread('tmp/syn100.png')
+#    fronter.rev_frontalization(tar, det, p2d, txtr)
+    front_tar = facefrontal(tar, detector, predictor)

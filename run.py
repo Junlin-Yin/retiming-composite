@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import cv2
+import numpy as np
 from __init__ import vfps, size, detector
 from retiming import retiming
 
@@ -30,4 +31,5 @@ def run():
     print('Start from frame %04d.' % startfr)
     
 if __name__ == '__main__':
-    run()
+    txtrs = np.load('input/i36t1.npy')
+    cv2.imwrite('tmp/syn100.png', txtrs[100])
