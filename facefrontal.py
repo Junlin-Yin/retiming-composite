@@ -176,7 +176,7 @@ def facefrontal(img, detector, predictor, detail=False):
     else:
         return newimg, p2d, projM, transM
     
-def warp_mapping(indices, pixels, shape, projM, transM, ldmk, ksize=10):
+def warp_mapping(indices, pixels, tarfr, tarldmk, projM, transM, ksize=10):
     # frontal points -> original resized points
     pt3d = fronter.refU[indices[:, 1], indices[:, 0], :]        # (N, 3)
     pt3d_homo = np.insert(pt3d, 3, [1]*pt3d.shape[0], axis=1)   # (N, 4)
@@ -193,19 +193,22 @@ def warp_mapping(indices, pixels, shape, projM, transM, ldmk, ksize=10):
     # skip this part for the moment, and complete it if necessary
     
     # define the region in the original frame field to be recalculated
-    mask = np.zeros(shape, dtype=np.uint8)
-    mask[opt2d_grid[:, 1], opt2d_grid[:, 0]] = 255
+    warp_mask = np.zeros(tarfr.shape[:2], dtype=np.uint8)
+    warp_mask[opt2d_grid[:, 1], opt2d_grid[:, 0]] = 255
     kernel = np.ones((ksize, ksize), dtype=np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    ys, xs = mask.nonzero()
-    region = np.array([(x, y) for x, y in zip(xs, ys)])     # (N, 2)
-
-    # eliminate region that is out of chin landmarks
-    chin_xp, chin_fp = ldmk[ 3:14, 0], ldmk[ 3:14, 1]
-    chin_line = np.interp(np.arange(shape[1]), chin_xp, chin_fp)
-    region = region[region[:, 1] < chin_line[region[:, 0]]]
+    warp_mask = cv2.morphologyEx(warp_mask, cv2.MORPH_CLOSE, kernel)
     
-    return region, opt2d, pixels
+    face_contour = tarldmk[[2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+                            12, 13, 14, 35, 34, 33, 32, 31], :].astype(np.int)
+    face_mask = np.zeros(tarfr.shape[:2], dtype=np.uint8)
+    face_mask = cv2.drawContours(face_mask, [face_contour], -1, 255, -1)
+    
+    # eliminate region that is out of face landmarks
+    warp_mask = warp_mask & face_mask
+    ys, xs = warp_mask.nonzero()
+    region = np.array([(x, y) for x, y in zip(xs, ys)])     # (N, 2)
+    
+    return warp_mask, region, opt2d, pixels
 
 def test1():
     indices = np.load('tmp/indices.npy')

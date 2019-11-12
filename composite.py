@@ -34,7 +34,7 @@ def reconstruct(G, Lappyr):
         G += Lappyr[i]
     return G.astype(np.uint8)
 
-def pyramid_blend(img1, img2, mask_, layers=5):
+def pyramid_blend(img1, img2, mask_, layers=4):
     assert(img1.shape == img2.shape and img1.shape[:2] == mask_.shape)
     mask = mask_ / np.max(mask_)    # 0 ~ 1
     # construct Gaussian pyramids of input images
@@ -108,16 +108,16 @@ def align2target(syntxtr, tar_shape, sq, padw=padw, detw=detw):
     syn_face[padw:padw+detw, padw:padw+detw, :] = syn_face_
     return syn_face
 
-def recalc_pixel(pt, coords, pixels, thr=5, sigma=1.0):
+def recalc_pixel(pt, coords, pixels, thr=5, sigma=0.2):
     L2 = np.linalg.norm(coords-pt, ord=2, axis=1)
     indx  = np.where(L2 <= thr)
     weights = np.exp(-L2[indx]**2 / (2* sigma**2))
     weights /= np.sum(weights)  # np.sum(weights) == 1
     return np.matmul(weights, pixels[indx, :])
 
-def warpback(face, tarfr, tar_ldmk, mask, projM, transM, dsize=10):
+def warpback(face, tarfr, tarldmk, mask, projM, transM, dsize=10):
     # dilate the blend mask to expand the warp region
-    nmask = 255 - mask
+    nmask = ~mask
     kernel = np.ones((dsize, dsize), dtype=np.uint8)
     nmask = cv2.dilate(nmask, kernel)
     ys, xs = nmask.nonzero()
@@ -125,13 +125,14 @@ def warpback(face, tarfr, tar_ldmk, mask, projM, transM, dsize=10):
     pixels = face[indices[:, 1], indices[:, 0], :]           # (N, 3)
     
     # get the to-be-recalculated region in the original frame
-    region, coords, pixels = warp_mapping(indices, pixels, tarfr.shape[:2], projM, transM, tar_ldmk)
+    warp_mask, region, coords, pixels = warp_mapping(indices, pixels, tarfr, tarldmk, projM, transM)
     
     # do recalculation for every pixel in the region
-    outpfr = np.copy(tarfr)
+    tmpfr = np.zeros(tarfr.shape, dtype=np.uint8)
     for pt in region:
-        outpfr[pt[1], pt[0], :] = recalc_pixel(pt, coords, pixels)
-        
+        tmpfr[pt[1], pt[0], :] = recalc_pixel(pt, coords, pixels)
+    tmpfr = cv2.inpaint(tmpfr, ~warp_mask, 10, cv2.INPAINT_TELEA)
+    outpfr = pyramid_blend(tmpfr, tarfr, warp_mask)
     return outpfr
 
 def synthesize_frame(tarfr, syntxtr, sq):
@@ -148,13 +149,6 @@ def synthesize_frame(tarfr, syntxtr, sq):
     
     # warp the frontal face to the original pose
     outpfr = warpback(bld_face, tarfr, ldmk, mask, projM, transM)
-    
-#    cv2.imshow('ftl', ftl_face)
-#    cv2.imshow('syn', syn_face)
-    cv2.imshow('bld', bld_face)
-    cv2.imshow('outp', outpfr)
-    cv2.waitKey(0)
-    
     return outpfr
 
 def test1():
@@ -179,7 +173,8 @@ def test3():
     tarfr = cv2.imread('tmp/0660.png')
     syntxtr = cv2.imread('tmp/syn100.png')
     sq = Square(0.25, 0.75, 0.6, 1.0)
-    synthesize_frame(tarfr, syntxtr, sq)
+    outpfr = synthesize_frame(tarfr, syntxtr, sq)
+    cv2.imwrite('tmp/i100t660.png', outpfr)
 
 if __name__ == '__main__':
     test3()
