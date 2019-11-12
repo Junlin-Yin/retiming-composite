@@ -22,9 +22,12 @@ from scipy import ndimage
 
 def plot3d(p3ds):
     import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(p3ds[:,0],p3ds[:,1], p3ds[:,2])
+    plt.xlabel('x')
+    plt.ylabel('y')
     plt.show()
     
 def resize(img, det, p2d, detw=200, imgw=320):
@@ -50,9 +53,9 @@ def resize(img, det, p2d, detw=200, imgw=320):
     
     img_ = img_[top-gap:top+detw+gap, left-gap:left+detw+gap, :]
     p2d_ -= (left-gap, top-gap)
-    rect_ = (gap, gap, gap+detw, gap+detw)
+    transM = np.array([[ratio, 0, 0], [0, ratio, 0], [2*gap-left, 2*gap-top, 1]])
     
-    return img_, p2d_, rect_
+    return img_, p2d_, transM
 
 class frontalizer():
     def __init__(self,refname):
@@ -83,28 +86,10 @@ class frontalizer():
             ProjM_ = self.A.dot(np.insert(matx[0],3,tvec.T,axis=1))     # intrinsic * extrinsic
             return rvec,tvec,ProjM_
         
-    def rev_frontalization(self, target_, facebb, p2d_, txtr):
-        img, p2d, _ = resize(target_, facebb, p2d_)
-        tem3d = np.reshape(self.refU,(-1,3),order='F')
-        bgids = tem3d[:,1] < 0# excluding background 3d points 
-        ref3dface = np.insert(tem3d, 3, np.ones(len(tem3d)),axis=1).T   # homogeneous coordinates
-        _, _, ProjM = self.get_headpose(p2d)
-        proj3d = ProjM.dot(ref3dface)
-        proj3d[0] /= proj3d[2]      # homogeneous normalization
-        proj3d[1] /= proj3d[2]      # homogeneous normalization
-        proj2dtmp = proj3d[0:2]
-        #The 3D reference is projected to the 2D region by the estimated pose 
-        #Then check the projection lies in the image or not 
-        vlids = np.logical_and(np.logical_and(proj2dtmp[0] > 0, proj2dtmp[1] > 0), 
-                               np.logical_and(proj2dtmp[0] < img.shape[1] - 1,  proj2dtmp[1] < img.shape[0] - 1))
-        vlids = np.logical_and(vlids, bgids)
-        proj2d_valid = proj2dtmp[:,vlids]       # totally vlids points can be projected into the query image
-        return txtr
-        
     def frontalization(self, img_, facebb, p2d_):
         #we rescale the face region (twice as big as the detected face) before applying frontalisation
         ACC_CONST = 0
-        img, p2d, _ = resize(img_, facebb, p2d_)
+        img, p2d, TransM = resize(img_, facebb, p2d_)
        
         tem3d = np.reshape(self.refU,(-1,3),order='F')
         bgids = tem3d[:,1] < 0# excluding background 3d points 
@@ -166,10 +151,10 @@ class frontalizer():
             frontal_sym = (rawfrontal * weights + rawfrontal * weight_take_from_org + np.fliplr(rawfrontal) * weight_take_from_sym) / denominator
         else:
             frontal_sym = rawfrontal
-        return rawfrontal, frontal_sym, ProjM
+        return rawfrontal, frontal_sym, ProjM, TransM
 
 fronter = frontalizer('reference/ref3d.pkl')
-def facefrontal(img, detector, predictor, proj=False):
+def facefrontal(img, detector, predictor, detail=False):
     '''
     ### parameters
     img: original image to be frontalized \\
@@ -184,19 +169,85 @@ def facefrontal(img, detector, predictor, proj=False):
     det = dets[0]
     shape = predictor(img, det)
     p2d = np.asarray([(shape.part(n).x, shape.part(n).y,) for n in range(shape.num_parts)], np.float32)
-    rawfront, symfront, projM = fronter.frontalization(img, det, p2d)
+    rawfront, symfront, projM, transM = fronter.frontalization(img, det, p2d)
     newimg = symfront.astype('uint8')
-    if proj == False:
+    if detail == False:
         return newimg
     else:
-        return newimg, projM
+        return newimg, projM, transM
+    
+def warp_mapping(indices, pixels, shape, projM, transM, ksize=10):
+    # frontal points -> original resized points
+    pt3d = fronter.refU[indices[:, 1], indices[:, 0], :]        # (N, 3)
+    pt3d_homo = np.insert(pt3d, 3, [1]*pt3d.shape[0], axis=1)   # (N, 4)
+    pt2d_homo = np.matmul(pt3d_homo, projM.T)                   # (N, 3)
+#    pt2d_homo = pt2d_homo / pt2d_homo[:, 2][:, np.newaxis]
+    
+    # original resized points -> true original points
+    opt2d_homo = np.matmul(pt2d_homo, np.linalg.inv(transM))    # (N, 3)
+    opt2d_homo = opt2d_homo / opt2d_homo[:, 2][:, np.newaxis]
+    opt2d = opt2d_homo[:, :2]                                   # (N, 2)
+    opt2d_grid = opt2d.astype(np.int)                           # (N, 2)
+    
+    # eliminate occlusion caused by rotation
+    # skip this part for the moment, and complete it if necessary
+    
+    # define the region in the original frame field to be recalculated
+    mask = np.zeros(shape, dtype=np.uint8)
+    mask[opt2d_grid[:, 1], opt2d_grid[:, 0]] = 255
+    kernel = np.ones((ksize, ksize), dtype=np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    ys, xs = mask.nonzero()
+    region = np.array([(x, y) for x, y in zip(xs, ys)])     # (N, 2)
 
+    return region, opt2d, pixels
+
+def test1():
+    indices = np.load('tmp/indices.npy')
+    projM = np.load('tmp/projM.npy')
+    transM = np.load('tmp/transM.npy')
+    region, coords = warp_mapping(indices, projM, transM)
+    
+def test2():
+    p2d = np.load('tmp/p2d.npy')                        # original resized face
+    p3d = np.load('tmp/p3d.npy')                        # standard template face model
+    fp2d = np.load('tmp/fp2d.npy').astype(np.int)       # frontalized face
+    projM = np.load('tmp/projM.npy')
+    fp3d = fronter.refU[fp2d[:, 1], fp2d[:, 0], :]
+    p3d_homo = np.insert(p3d, 3, [1]*p3d.shape[0], axis=1)
+    fp3d_homo = np.insert(fp3d, 3, [1]*fp3d.shape[0], axis=1)
+    p2d_homo = np.matmul(p3d_homo, projM.T)
+    fp2d_homo = np.matmul(fp3d_homo, projM.T)
+    p2d_homo = p2d_homo / p2d_homo[:, 2][:, np.newaxis]
+    fp2d_homo = fp2d_homo / fp2d_homo[:, 2][:, np.newaxis]
+    p2d_ = p2d_homo[:, :2]
+    fp2d_ = fp2d_homo[:, :2]
+    import matplotlib.pyplot as plt
+    plt.scatter(p2d[:, 0], -p2d[:, 1], c='blue')
+    plt.scatter(p2d_[:, 0], -p2d_[:, 1], c='red')
+    plt.scatter(fp2d_[:, 0], -fp2d_[:, 1], c='green')
+    plt.show()
+    L2_1 = np.mean(np.linalg.norm(p2d-p2d_, axis=1, ord=2))
+    L2_2 = np.mean(np.linalg.norm(p2d-fp2d_, axis=1, ord=2))
+    print(L2_1, L2_2)
+    
+def test3():
+     fp2d = np.load('tmp/fp2d.npy').astype(np.int)       # frontalized face
+     projM = np.load('tmp/projM.npy')
+     transM = np.load('tmp/transM.npy')
+     img = cv2.imread('tmp/0660.png')
+     fp3d = fronter.refU[fp2d[:, 1], fp2d[:, 0], :]
+     fp3d_homo = np.insert(fp3d, 3, [1]*fp3d.shape[0], axis=1)
+     fp2d_homo = np.matmul(fp3d_homo, projM.T)
+     op2d_homo = np.matmul(fp2d_homo, np.linalg.inv(transM))
+     op2d_homo = op2d_homo / op2d_homo[:, 2][:, np.newaxis]
+     op2d = op2d_homo[:, :2].astype(np.int)
+     for pt in op2d[48:]:
+         
+         cv2.circle(img, tuple(pt), 2, (0, 0, 255), -1)
+     cv2.imshow('test', img)
+     cv2.waitKey(0)
+     
+     
 if __name__ == "__main__":
-    from __init__ import detector, predictor
-    tar = cv2.imread('tmp/0660.png')
-    det = detector(tar, 1)[0]
-    shape = predictor(tar, det)
-    p2d = np.asarray([(shape.part(n).x, shape.part(n).y) for n in range(shape.num_parts)], np.float32)
-    txtr = cv2.imread('tmp/syn100.png')
-#    fronter.rev_frontalization(tar, det, p2d, txtr)
-    front_tar = facefrontal(tar, detector, predictor)
+    test3()

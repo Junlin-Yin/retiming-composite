@@ -2,8 +2,11 @@
 
 import cv2
 from __init__ import Square, predictor, detector
-from facefrontal import facefrontal
+from facefrontal import facefrontal, warp_mapping
 import numpy as np
+
+padw = 95
+detw = 130
 
 def getGaussianPyr(img, layers):
     g = img.astype(np.float64)
@@ -55,7 +58,7 @@ def pyramid_blend(img1, img2, mask_, layers=5):
     img = reconstruct(initG, BLappyr)
     return img
 
-def getmaskregion(ftl_face, sq, padw=95, detw=130):
+def getmaskregion(ftl_face, sq, padw=padw, detw=detw, dsize=10):
     # get mask region using boundary, chin landmarks and nose landmarks
     # boundary region: left -> right, upper -> lower
     WH = ftl_face.shape[0]
@@ -77,12 +80,14 @@ def getmaskregion(ftl_face, sq, padw=95, detw=130):
                            region[:, 1] > nose_line[region[:, 0]])
     region = region[check.nonzero()]
     
-    # convert region to mask
+    # convert region to mask and do dilation to contrast the blending region
     mask = np.ones(ftl_face.shape[:2], dtype=np.uint8) * 255
     mask[region[:, 1], region[:, 0]] = 0
+    kernel = np.ones((dsize, dsize), dtype=np.uint8)
+    mask = cv2.dilate(mask, kernel)    
     return mask
 
-def align2target(syntxtr, tar_shape, sq, padw=95, detw=130):
+def align2target(syntxtr, tar_shape, sq, padw=padw, detw=detw):
     # align lower-face to target frame
 #   |padw| detw  |padw|
 #   |----|-------|---------
@@ -103,9 +108,22 @@ def align2target(syntxtr, tar_shape, sq, padw=95, detw=130):
     syn_face[padw:padw+detw, padw:padw+detw, :] = syn_face_
     return syn_face
 
+def warpback(face, tarfr, mask, projM, transM, dsize=10):
+    # dilate the blend mask to expand the warp region
+    nmask = 255 - mask
+    kernel = np.ones((dsize, dsize), dtype=np.uint8)
+    nmask = cv2.dilate(nmask, kernel)
+    ys, xs = nmask.nonzero()
+    indices = np.array([(x, y) for x, y in zip(xs, ys)])     # (N, 2)
+    pixels = face[indices[:, 1], indices[:, 0], :]           # (N, 3)
+    
+    region, coords, pixels = warp_mapping(indices, pixels, tarfr.shape[:2], projM, transM)
+    outpfr = tarfr
+    return outpfr
+
 def synthesize_frame(tarfr, syntxtr, sq):
     # frontalize the target frame
-    ftl_face, projM = facefrontal(tarfr, detector, predictor, proj=True)
+    ftl_face, projM, transM = facefrontal(tarfr, detector, predictor, detail=True)
     
     # align lower-face to target frame
     syn_face = align2target(syntxtr, ftl_face.shape, sq)
@@ -113,7 +131,7 @@ def synthesize_frame(tarfr, syntxtr, sq):
     # blend lower-face into target frame
     mask = getmaskregion(ftl_face, sq)
     syn_face = cv2.inpaint(syn_face, mask, 10, cv2.INPAINT_TELEA)
-    bld_face = pyramid_blend(ftl_face, syn_face, mask, layers=5)
+    bld_face = pyramid_blend(ftl_face, syn_face, mask)
     
 #    cv2.imshow('ftl', ftl_face)
 #    cv2.imshow('syn', syn_face)
@@ -121,8 +139,7 @@ def synthesize_frame(tarfr, syntxtr, sq):
 #    cv2.waitKey(0)
     
     # warp the frontal face to the original pose
-    
-    outpfr = bld_face
+    outpfr = warpback(bld_face, tarfr, mask, projM, transM)
     return outpfr
 
 def test1():
@@ -136,9 +153,18 @@ def test1():
         blend = pyramid_blend(left, right, mask, layers)
         spec[mask.shape[0]*layers:mask.shape[0]*(layers+1), :, :] = blend
     cv2.imwrite('reference/blend.png', spec)
-
-if __name__ == '__main__':
+    
+def test2():
+    tarfr = cv2.imread('tmp/0660.png')
+    region = np.load('tmp/region.npy')
+    tarfr[region[:, 1], region[:, 0], :] = (255, 255, 0)
+    cv2.imwrite('tmp/regiontest.png', tarfr)
+    
+def test3():
     tarfr = cv2.imread('tmp/0660.png')
     syntxtr = cv2.imread('tmp/syn100.png')
     sq = Square(0.25, 0.75, 0.6, 1.0)
     synthesize_frame(tarfr, syntxtr, sq)
+
+if __name__ == '__main__':
+    test2()
