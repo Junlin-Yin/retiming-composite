@@ -174,9 +174,9 @@ def facefrontal(img, detector, predictor, detail=False):
     if detail == False:
         return newimg
     else:
-        return newimg, projM, transM
+        return newimg, p2d, projM, transM
     
-def warp_mapping(indices, pixels, shape, projM, transM, ksize=10):
+def warp_mapping(indices, pixels, shape, projM, transM, ldmk, ksize=10):
     # frontal points -> original resized points
     pt3d = fronter.refU[indices[:, 1], indices[:, 0], :]        # (N, 3)
     pt3d_homo = np.insert(pt3d, 3, [1]*pt3d.shape[0], axis=1)   # (N, 4)
@@ -200,6 +200,11 @@ def warp_mapping(indices, pixels, shape, projM, transM, ksize=10):
     ys, xs = mask.nonzero()
     region = np.array([(x, y) for x, y in zip(xs, ys)])     # (N, 2)
 
+    # eliminate region that is out of chin landmarks
+    chin_xp, chin_fp = ldmk[ 3:14, 0], ldmk[ 3:14, 1]
+    chin_line = np.interp(np.arange(shape[1]), chin_xp, chin_fp)
+    region = region[region[:, 1] < chin_line[region[:, 0]]]
+    
     return region, opt2d, pixels
 
 def test1():
@@ -247,7 +252,6 @@ def test3():
          cv2.circle(img, tuple(pt), 2, (0, 0, 255), -1)
      cv2.imshow('test', img)
      cv2.waitKey(0)
-     
      
 if __name__ == "__main__":
     test3()

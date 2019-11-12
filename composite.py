@@ -108,7 +108,14 @@ def align2target(syntxtr, tar_shape, sq, padw=padw, detw=detw):
     syn_face[padw:padw+detw, padw:padw+detw, :] = syn_face_
     return syn_face
 
-def warpback(face, tarfr, mask, projM, transM, dsize=10):
+def recalc_pixel(pt, coords, pixels, thr=5, sigma=1.0):
+    L2 = np.linalg.norm(coords-pt, ord=2, axis=1)
+    indx  = np.where(L2 <= thr)
+    weights = np.exp(-L2[indx]**2 / (2* sigma**2))
+    weights /= np.sum(weights)  # np.sum(weights) == 1
+    return np.matmul(weights, pixels[indx, :])
+
+def warpback(face, tarfr, tar_ldmk, mask, projM, transM, dsize=10):
     # dilate the blend mask to expand the warp region
     nmask = 255 - mask
     kernel = np.ones((dsize, dsize), dtype=np.uint8)
@@ -117,13 +124,19 @@ def warpback(face, tarfr, mask, projM, transM, dsize=10):
     indices = np.array([(x, y) for x, y in zip(xs, ys)])     # (N, 2)
     pixels = face[indices[:, 1], indices[:, 0], :]           # (N, 3)
     
-    region, coords, pixels = warp_mapping(indices, pixels, tarfr.shape[:2], projM, transM)
-    outpfr = tarfr
+    # get the to-be-recalculated region in the original frame
+    region, coords, pixels = warp_mapping(indices, pixels, tarfr.shape[:2], projM, transM, tar_ldmk)
+    
+    # do recalculation for every pixel in the region
+    outpfr = np.copy(tarfr)
+    for pt in region:
+        outpfr[pt[1], pt[0], :] = recalc_pixel(pt, coords, pixels)
+        
     return outpfr
 
 def synthesize_frame(tarfr, syntxtr, sq):
     # frontalize the target frame
-    ftl_face, projM, transM = facefrontal(tarfr, detector, predictor, detail=True)
+    ftl_face, ldmk, projM, transM = facefrontal(tarfr, detector, predictor, detail=True)
     
     # align lower-face to target frame
     syn_face = align2target(syntxtr, ftl_face.shape, sq)
@@ -133,13 +146,15 @@ def synthesize_frame(tarfr, syntxtr, sq):
     syn_face = cv2.inpaint(syn_face, mask, 10, cv2.INPAINT_TELEA)
     bld_face = pyramid_blend(ftl_face, syn_face, mask)
     
+    # warp the frontal face to the original pose
+    outpfr = warpback(bld_face, tarfr, ldmk, mask, projM, transM)
+    
 #    cv2.imshow('ftl', ftl_face)
 #    cv2.imshow('syn', syn_face)
-#    cv2.imshow('bld', bld_face)
-#    cv2.waitKey(0)
+    cv2.imshow('bld', bld_face)
+    cv2.imshow('outp', outpfr)
+    cv2.waitKey(0)
     
-    # warp the frontal face to the original pose
-    outpfr = warpback(bld_face, tarfr, mask, projM, transM)
     return outpfr
 
 def test1():
@@ -167,4 +182,4 @@ def test3():
     synthesize_frame(tarfr, syntxtr, sq)
 
 if __name__ == '__main__':
-    test2()
+    test3()
