@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import cv2
-from __init__ import Square, predictor, detector
+from __init__ import Square, predictor, detector, vfps, size
 from facefrontal import facefrontal, warp_mapping
 import numpy as np
 
@@ -58,13 +58,13 @@ def pyramid_blend(img1, img2, mask_, layers=4):
     img = reconstruct(initG, BLappyr)
     return img
 
-def getmaskregion(ftl_face, sq, padw=padw, detw=detw, dsize=10):
+def getindices(ftl_face, sq, padw=padw, detw=detw):
     # get mask region using boundary, chin landmarks and nose landmarks
     # boundary region: left -> right, upper -> lower
     WH = ftl_face.shape[0]
     boundary = sq.align(detw)
     left, right, upper, lower = np.array(boundary) + padw
-    region = np.array([(x, y) for x in range(left, right) for y in range(upper, lower)])
+    indices = np.array([(x, y) for x in range(left, right) for y in range(upper, lower)])
     
     # get landmarks of frontalized face
     det = detector(ftl_face, 1)[0]
@@ -76,16 +76,9 @@ def getmaskregion(ftl_face, sq, padw=padw, detw=detw, dsize=10):
     nose_line = np.interp(np.arange(WH), nose_xp, nose_fp)
 
     # filter the position which is out of chin line and nose line    
-    check = np.logical_and(region[:, 1] < chin_line[region[:, 0]],
-                           region[:, 1] > nose_line[region[:, 0]])
-    region = region[check.nonzero()]
-    
-    # convert region to mask and do dilation to contrast the blending region
-    mask = np.ones(ftl_face.shape[:2], dtype=np.uint8) * 255
-    mask[region[:, 1], region[:, 0]] = 0
-    kernel = np.ones((dsize, dsize), dtype=np.uint8)
-    mask = cv2.dilate(mask, kernel)    
-    return mask
+    check = np.logical_and(indices[:, 1] < chin_line[indices[:, 0]],
+                           indices[:, 1] > nose_line[indices[:, 0]])
+    return indices[check.nonzero()]
 
 def align2target(syntxtr, tar_shape, sq, padw=padw, detw=detw):
     # align lower-face to target frame
@@ -115,13 +108,8 @@ def recalc_pixel(pt, coords, pixels, thr=5, sigma=0.2):
     weights /= np.sum(weights)  # np.sum(weights) == 1
     return np.matmul(weights, pixels[indx, :])
 
-def warpback(face, tarfr, tarldmk, mask, projM, transM, dsize=10):
-    # dilate the blend mask to expand the warp region
-    nmask = ~mask
-    kernel = np.ones((dsize, dsize), dtype=np.uint8)
-    nmask = cv2.dilate(nmask, kernel)
-    ys, xs = nmask.nonzero()
-    indices = np.array([(x, y) for x, y in zip(xs, ys)])     # (N, 2)
+def warpback(face, tarfr, tarldmk, indices, projM, transM):
+    # get the pixels of given indices
     pixels = face[indices[:, 1], indices[:, 0], :]           # (N, 3)
     
     # get the to-be-recalculated region in the original frame
@@ -132,8 +120,7 @@ def warpback(face, tarfr, tarldmk, mask, projM, transM, dsize=10):
     for pt in region:
         tmpfr[pt[1], pt[0], :] = recalc_pixel(pt, coords, pixels)
     tmpfr = cv2.inpaint(tmpfr, ~warp_mask, 10, cv2.INPAINT_TELEA)
-    outpfr = pyramid_blend(tmpfr, tarfr, warp_mask)
-    return outpfr
+    return pyramid_blend(tmpfr, tarfr, warp_mask)
 
 def synthesize_frame(tarfr, syntxtr, sq):
     # frontalize the target frame
@@ -142,14 +129,26 @@ def synthesize_frame(tarfr, syntxtr, sq):
     # align lower-face to target frame
     syn_face = align2target(syntxtr, ftl_face.shape, sq)
    
-    # blend lower-face into target frame
-    mask = getmaskregion(ftl_face, sq)
-    syn_face = cv2.inpaint(syn_face, mask, 10, cv2.INPAINT_TELEA)
-    bld_face = pyramid_blend(ftl_face, syn_face, mask)
+    # get indices of pixels in ftl_face which needs to be blended into target frame
+    indices = getindices(ftl_face, sq)
     
-    # warp the frontal face to the original pose
-    outpfr = warpback(bld_face, tarfr, ldmk, mask, projM, transM)
-    return outpfr
+    # warp the synthesized face to the original pose and blending
+    return warpback(syn_face, tarfr, ldmk, indices, projM, transM)
+
+def composite(inp_path, tar_path, save_path, sq):
+    syndata = np.load(inp_path)
+    cap = cv2.VideoCapture(tar_path)
+    writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'DIVX'), vfps, size)
+    nfr = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    assert(syndata.shape[0] == nfr)
+    for i in range(nfr):
+        print('%s: %04d/%04d' % (save_path, i+1, nfr))
+        ret, tarfr = cap.read()
+        assert(ret)
+        frame = synthesize_frame(tarfr, syndata[i], sq)
+        writer.write(frame)
+    print('%s: synthesis done.' % save_path)
+    return save_path
 
 def test1():
     left = cv2.imread('tmp/left.png')
